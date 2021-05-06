@@ -291,9 +291,7 @@ class YuQueWorker(YuQueAssistantBase):
 
 
 if __name__ == "__main__":
-    """
-    调试版本
-    """
+
     loop = asyncio.get_event_loop()
     yw = YuQueWorker(loop=loop, token="你的token")
 
