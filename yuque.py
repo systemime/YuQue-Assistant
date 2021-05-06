@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import aiofiles
 import ujson
 import logging
 import os
 import time
 import uvloop
-import aiofiles
+import sys
 
 from aiohttp import ClientSession, TCPConnector
 from aiomultiprocess import Pool
@@ -43,17 +44,6 @@ class YuQueAssistantBase:
         self.file_list = [val.name.split(".md")[0] for val in self.file_path.iterdir()]
 
     @property
-    def get_and_update_file_list(self):
-        self.file_list = [
-            val.name.split(".json")[0] for val in self.file_path.iterdir()
-        ]
-        return self.file_list
-
-    @staticmethod
-    def load_loop():
-        return asyncio.new_event_loop()
-
-    @property
     def check_loop_running(self):
         return self.loop.is_running()
 
@@ -62,14 +52,13 @@ class YuQueAssistantBase:
         return self.loop.is_closed()
 
     @staticmethod
-    def tcp_limiter(limit=10, ssl=True):
+    def load_loop():
+        return asyncio.new_event_loop()
+
+    @staticmethod
+    def tcp_limiter(limit=7, ssl=True):
         """频率限制"""
         return TCPConnector(limit=limit, ssl=ssl)
-
-    async def yq_session(self, new=False, **kwargs):
-        if not self.session or new:
-            self.session = ClientSession(connector=self.tcp_limiter(**kwargs))
-        return self.session
 
     @staticmethod
     async def put_over_all_task():
@@ -80,6 +69,11 @@ class YuQueAssistantBase:
             val.cancel()
 
         await asyncio.gather(*task_list, return_exceptions=True)
+
+    async def yq_session(self, new=False, **kwargs):
+        if not self.session or new:
+            self.session = ClientSession(connector=self.tcp_limiter(**kwargs))
+        return self.session
 
 
 class Singleton(type):
@@ -159,7 +153,10 @@ class YuQueArticleAssistant(metaclass=Singleton):
             self.bolg_url.format(extend.slug), headers=self.headers
         ) as r:
             row = await r.json(loads=ujson.loads)
-
+        if row.get("status") == 429:
+            logger.warning(f"请求过多被限制, 将自动重试.\n请求参数: {kwargs}\n错误信息: {row.get('message')}")
+            await self.blog_worker(kwargs)
+        else:
             row = row["data"]
             if r"/" in row["title"]:  # 清理不规范的命名
                 row["title"] = row["title"].replace("/", "、").replace(":", "：")
@@ -184,7 +181,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
     async def get_blog_info(self, args):
         *slug_list, file_list, file_path = args
 
-        async with ClientSession(connector=TCPConnector(limit=7, ssl=True)) as session:
+        async with ClientSession(connector=YuQueAssistantBase.tcp_limiter()) as session:
             task_list = [
                 asyncio.create_task(
                     self.blog_worker(
@@ -198,7 +195,12 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 )
                 for slug in slug_list
             ]
-            row = await asyncio.gather(*task_list)
+            row = []
+            try:
+                for f in asyncio.as_completed(task_list, timeout=20):
+                    row.append(await f)
+            except asyncio.TimeoutError as error:
+                logger.warning(f"** 存在超时任务 {datetime.now()} **\nError: {error}\nStack: {sys.exc_info()}")
 
         return row
 
