@@ -251,7 +251,7 @@ class YuQueWorker(YuQueAssistantBase):
 if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
-    yw = YuQueWorker(loop=loop, token="TRFH2hTvyoADMjNIa348S81bBLpmHOIx6Ea4LAgO")
+    yw = YuQueWorker(loop=loop, token="你的token")
 
     started_at = time.monotonic()
 
