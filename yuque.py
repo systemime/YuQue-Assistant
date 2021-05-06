@@ -17,7 +17,7 @@ from pathlib import Path
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-load_dotenv(dotenv_path=Path('.') / '.env', verbose=True)
+load_dotenv(dotenv_path=Path(".") / ".env", verbose=True)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -36,7 +36,10 @@ class YuQueAssistantBase:
         self.session = None
         self.loop = kwargs["loop"]
         # 文件配置
-        self.file_path = os.getenv("save_path") or Path(__file__).resolve(strict=True).parent / "blog"
+        self.file_path = (
+            os.getenv("save_path")
+            or Path(__file__).resolve(strict=True).parent / "blog"
+        )
         self.file_list = [val.name.split(".md")[0] for val in self.file_path.iterdir()]
 
     @property
@@ -153,7 +156,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
     async def blog_worker(self, kwargs):
         extend = self.wrap(kwargs)
         async with extend.session.get(
-                self.bolg_url.format(extend.slug), headers=self.headers
+            self.bolg_url.format(extend.slug), headers=self.headers
         ) as r:
             row = await r.json(loads=ujson.loads)
 
@@ -165,7 +168,8 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 title=row["title"],
                 description=row["book"]["description"],
                 created_at=row["book"]["created_at"].split("T")[0],
-                header_img=os.getenv("header_img") or "/img/in-post/2020-10-29/header.jpg",
+                header_img=os.getenv("header_img")
+                or "/img/in-post/2020-10-29/header.jpg",
             )
 
             file_name = f"{row['book']['created_at'].split('T')[0]}-{row['title']}"
@@ -173,7 +177,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 logger.warning(f"{datetime.now()} :: {file_name} 已保存")
                 result = row["body"]
                 async with aiofiles.open(
-                        extend.file_path / f"{file_name}.md", mode="x"
+                    extend.file_path / f"{file_name}.md", mode="x"
                 ) as op:
                     await op.write(Summary + result)
 
