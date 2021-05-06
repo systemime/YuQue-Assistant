@@ -56,7 +56,7 @@ class YuQueAssistantBase:
         return asyncio.new_event_loop()
 
     @staticmethod
-    def tcp_limiter(limit=7, ssl=True):
+    def tcp_limiter(limit=8, ssl=True):
         """频率限制"""
         return TCPConnector(limit=limit, ssl=ssl)
 
@@ -228,7 +228,7 @@ class YuQueWorker(YuQueAssistantBase):
 
         async def run_all(yq_ass):
             # 建议总并发量不要超过33，否则语雀会返回too many request
-            async with Pool(processes=4, queuecount=2, childconcurrency=30) as pool:
+            async with Pool(processes=4, queuecount=2, childconcurrency=32) as pool:
                 # 为每个任务集中增加文件列表和文件位置
                 for val in split_tasks:
                     val.extend([self.file_list, self.file_path])
