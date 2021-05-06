@@ -12,31 +12,18 @@ from aiohttp import ClientSession, TCPConnector
 from aiomultiprocess import Pool
 from collections import namedtuple
 from datetime import datetime
+from dotenv import load_dotenv
 from pathlib import Path
 
-
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+
+load_dotenv(dotenv_path=Path('.') / '.env', verbose=True)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
 
-HEADERS = """---
-title: {title}
-subtitle: {description}
-author: systemime
-date: {created_at}
-header_img: {header_img}
-catalog: true
-tags:
-  - python
----
-
-摘要.
-
-<!-- more -->
-
-"""
+HEADERS = os.getenv("HEADERS")
 
 
 class YuQueAssistantBase:
@@ -49,7 +36,7 @@ class YuQueAssistantBase:
         self.session = None
         self.loop = kwargs["loop"]
         # 文件配置
-        self.file_path = Path(__file__).resolve(strict=True).parent / "blog"
+        self.file_path = os.getenv("save_path") or Path(__file__).resolve(strict=True).parent / "blog"
         self.file_list = [val.name.split(".md")[0] for val in self.file_path.iterdir()]
 
     @property
@@ -114,11 +101,11 @@ class YuQueArticleAssistant(metaclass=Singleton):
 
     def __init__(self, *args, **kwargs):
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
+            "User-Agent": os.getenv("User-Agent"),
             "X-Auth-Token": f"{kwargs['token']}",
         }
-        self.repos_url = "https://www.yuque.com/api/v2/repos/sound-dmmna/xolni1/docs"
-        self.bolg_url = "https://www.yuque.com/api/v2/repos/sound-dmmna/xolni1/docs/{}"
+        self.repos_url = os.getenv("repos_url")
+        self.bolg_url = os.getenv("bolg_url")
 
     def wrap(self, obj):
         for val in obj.copy():
@@ -166,7 +153,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
     async def blog_worker(self, kwargs):
         extend = self.wrap(kwargs)
         async with extend.session.get(
-            self.bolg_url.format(extend.slug), headers=self.headers
+                self.bolg_url.format(extend.slug), headers=self.headers
         ) as r:
             row = await r.json(loads=ujson.loads)
 
@@ -178,7 +165,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 title=row["title"],
                 description=row["book"]["description"],
                 created_at=row["book"]["created_at"].split("T")[0],
-                header_img="/img/in-post/2020-10-29/header.jpg",
+                header_img=os.getenv("header_img") or "/img/in-post/2020-10-29/header.jpg",
             )
 
             file_name = f"{row['book']['created_at'].split('T')[0]}-{row['title']}"
@@ -186,7 +173,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 logger.warning(f"{datetime.now()} :: {file_name} 已保存")
                 result = row["body"]
                 async with aiofiles.open(
-                    extend.file_path / f"{file_name}.md", mode="x"
+                        extend.file_path / f"{file_name}.md", mode="x"
                 ) as op:
                     await op.write(Summary + result)
 
@@ -194,7 +181,6 @@ class YuQueArticleAssistant(metaclass=Singleton):
         *slug_list, file_list, file_path = args
 
         async with ClientSession(connector=TCPConnector(limit=7, ssl=True)) as session:
-
             task_list = [
                 asyncio.create_task(
                     self.blog_worker(
@@ -249,9 +235,8 @@ class YuQueWorker(YuQueAssistantBase):
 
 
 if __name__ == "__main__":
-
     loop = asyncio.get_event_loop()
-    yw = YuQueWorker(loop=loop, token="你的token")
+    yw = YuQueWorker(loop=loop, token=os.getenv("token"))
 
     started_at = time.monotonic()
 
