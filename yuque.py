@@ -33,7 +33,7 @@ HEADERS = os.getenv("HEADERS")
 
 class Cache:
     def __init__(self, *args, **kwargs):
-        pool = redis.ConnectionPool(host='127.0.0.1', port=6379)
+        pool = redis.ConnectionPool(host="127.0.0.1", port=6379)
         self.client = redis.Redis(connection_pool=pool)
 
     def _op(self, key, method, *args, **kwargs):
@@ -190,7 +190,9 @@ class YuQueArticleAssistant(metaclass=Singleton):
     async def get_bolg_index(self):
         """获取全部文章索引"""
         async with ClientSession(connector=YuQueAssistantBase.tcp_limiter()) as session:
-            async with session.get(self.repos_url, params={}, headers=self.headers) as r:
+            async with session.get(
+                self.repos_url, params={}, headers=self.headers
+            ) as r:
                 result = await r.json(loads=ujson.loads)
 
         print(result)
@@ -199,14 +201,18 @@ class YuQueArticleAssistant(metaclass=Singleton):
         return result["data"]
 
     async def blog_worker(self, kwargs):
-        logger.warning(f"{datetime.now()} :: 进程 {os.getpid()} :: 线程 {threading.currentThread().native_id} :: {kwargs['slug']} 任务开始")
+        logger.warning(
+            f"{datetime.now()} :: 进程 {os.getpid()} :: 线程 {threading.currentThread().native_id} :: {kwargs['slug']} 任务开始"
+        )
         extend = self.wrap(kwargs)
         async with extend.session.get(
             self.bolg_url.format(extend.slug), headers=self.headers
         ) as r:
             row = await r.json(loads=ujson.loads)
         if row.get("status") == 429:
-            logger.warning(f"请求过多被限制, 将自动重试.\n请求参数: {kwargs}\n错误信息: {row.get('message')}")
+            logger.warning(
+                f"请求过多被限制, 将自动重试.\n请求参数: {kwargs}\n错误信息: {row.get('message')}"
+            )
             await asyncio.create_task(self.blog_worker(kwargs))
         else:
             row = row["data"]
@@ -233,7 +239,9 @@ class YuQueArticleAssistant(metaclass=Singleton):
     async def get_blog_info(self, args):
         *slug_list, file_list, file_path = args
 
-        async with ClientSession(connector=YuQueAssistantBase.tcp_limiter(limit=7)) as session:
+        async with ClientSession(
+            connector=YuQueAssistantBase.tcp_limiter(limit=7)
+        ) as session:
             task_list = [
                 asyncio.create_task(
                     self.blog_worker(
@@ -255,7 +263,9 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 for f in asyncio.as_completed(task_list, timeout=20):
                     row.append(await f)
             except asyncio.TimeoutError as error:
-                logger.warning(f"** 存在超时任务 {datetime.now()} **\nError: {error}\nStack: {sys.exc_info()}")
+                logger.warning(
+                    f"** 存在超时任务 {datetime.now()} **\nError: {error}\nStack: {sys.exc_info()}"
+                )
 
         return row
 
@@ -268,9 +278,7 @@ class YuQueWorker(YuQueAssistantBase):
     def get_blog_summary_info(self):
         """获取空间下博客摘要信息"""
         yq_ass = YuQueArticleAssistant(token=self.token)
-        result = yq_ass.run_until_complete(
-            yq_ass.get_bolg_index(), clean=True
-        )
+        result = yq_ass.run_until_complete(yq_ass.get_bolg_index(), clean=True)
         return [val["slug"] for val in result]
 
     def split_task(self, tasks, chunks=os.cpu_count()):
@@ -297,10 +305,13 @@ class YuQueWorker(YuQueAssistantBase):
         # 第三方异步进程池
         elif worker == 2:
             yq_ass = YuQueArticleAssistant(token=self.token)
+
             async def run_all(yq_ass):
                 # 建议总并发量不要超过5000/h(实际可以更高点)，否则语雀会返回too many request
                 async with APool(
-                        processes=4, queuecount=4, childconcurrency=32
+                    processes=int(os.getenv("processes") or os.cpu_count()),
+                    queuecount=4,
+                    childconcurrency=32,
                 ) as pool:
                     # 为每个任务集中增加文件列表和文件位置
                     for val in split_tasks:
