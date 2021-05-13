@@ -20,6 +20,8 @@
     User-Agent=
     # 必要 语雀token
     token=
+    # 进程数量，默认操作系统cpu数量
+    processes=
     # 必要 语雀知识库地址 eg: https://www.yuque.com/api/v2/repos/sound-dmmna/xolni1/docs
     repos_url=
     # 必要 语雀知识库内文章地址 eg: https://www.yuque.com/api/v2/repos/sound-dmmna/xolni1/docs/{}
@@ -29,6 +31,8 @@
     HEADERS=
     # 非必要 如果是vuepress的md头部信息 该参数标示文章头图
     header_img=
+    # 文件夹下按照文件后缀提取文件名 eg: suffix=md
+    suffix=
     # 非必要 如果没有该变量，自动保存脚本同级目录下blog目录(手动创建)
     save_path=
     ```
@@ -44,5 +48,7 @@
   - [x] 使用uvloop
   - [x] 异步保存为md格式，并添加vuepress需要的头部信息
   - [x] 通过环境变量规范配置
-  - [ ] 引入线程池，增加并行
+  - [x] 原生进程池并发
+  - [ ] 原生进程池并发增加总体并发限制方法
+  - [ ] 引入线程池，增加并发能力
 
