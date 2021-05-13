@@ -6,15 +6,19 @@ import ujson
 import logging
 import os
 import time
+import threading
 import uvloop
 import sys
+import redis
 
 from aiohttp import ClientSession, TCPConnector
-from aiomultiprocess import Pool
+from aiomultiprocess import Pool as APool
+from multiprocessing import Pool as MPool
 from collections import namedtuple
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
+from psutil.tests import is_namedtuple
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
@@ -27,32 +31,62 @@ logger.addHandler(logging.StreamHandler())
 HEADERS = os.getenv("HEADERS")
 
 
+class Cache:
+    def __init__(self, *args, **kwargs):
+        pool = redis.ConnectionPool(host='127.0.0.1', port=6379)
+        self.client = redis.Redis(connection_pool=pool)
+
+    def _op(self, key, method, *args, **kwargs):
+        return method(key, *args, **kwargs)
+
+    def set(self, key, *args, **kwargs):
+        return self._op(key, self.client.set, *args, **kwargs)
+
+    def get(self, key, *args, **kwargs):
+        return self._op(key, self.client.get, *args, **kwargs).decode("utf-8")
+
+    def rpop(self, key, *args, **kwargs):
+        return self._op(key, self.client.rpop, *args, **kwargs).decode("utf-8")
+
+    def lpush(self, key, *args, **kwargs):
+        return self._op(key, self.client.lpush, *args, **kwargs)
+
+
+op = Cache()
+
+
 class YuQueAssistantBase:
     """
     YuQue助手基类
     """
 
     def __init__(self, *args, **kwargs):
-        # 基本loop
-        self.session = None
-        self.loop = kwargs["loop"]
         # 文件配置
+        self.suffix = os.getenv("suffix")
         self.file_path = (
             os.getenv("save_path")
             or Path(__file__).resolve(strict=True).parent / "blog"
         )
-        self.file_list = [val.name.split(".md")[0] for val in self.file_path.iterdir()]
 
     @property
-    def check_loop_running(self):
-        return self.loop.is_running()
+    def file_list(self):
+        """返回存储文件夹下所有预设类型文件名"""
+        return [val.name.split(self.suffix)[0] for val in self.file_path.iterdir()]
 
-    @property
-    def check_loop_closed(self):
-        return self.loop.is_closed()
+    @staticmethod
+    def check_loop_running():
+        """检查线程中是否有运行的loop"""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return False
 
     @staticmethod
     def load_loop():
+        loop = YuQueAssistantBase.check_loop_running()
+        if loop:
+            asyncio.set_event_loop(loop)
+            return loop
         return asyncio.new_event_loop()
 
     @staticmethod
@@ -62,7 +96,7 @@ class YuQueAssistantBase:
 
     @staticmethod
     async def put_over_all_task():
-        """取消当前未完成的任务"""
+        """取消当前线程未完成的协程任务"""
         task_list = iter(asyncio.all_tasks())
         next(task_list)
         for val in task_list:
@@ -70,10 +104,16 @@ class YuQueAssistantBase:
 
         await asyncio.gather(*task_list, return_exceptions=True)
 
-    async def yq_session(self, new=False, **kwargs):
-        if not self.session or new:
-            self.session = ClientSession(connector=self.tcp_limiter(**kwargs))
-        return self.session
+    async def semaphore_limit(self):
+        """协程信号量限制器
+
+        async with semaphore:
+            print('start work')
+            # optionally do a lot of work that will consume memory
+            await asyncio.sleep(1)
+        """
+        semaphore = asyncio.BoundedSemaphore(10)
+        return semaphore
 
 
 class Singleton(type):
@@ -103,8 +143,13 @@ class YuQueArticleAssistant(metaclass=Singleton):
         }
         self.repos_url = os.getenv("repos_url")
         self.bolg_url = os.getenv("bolg_url")
+        self.loop = None
 
     def wrap(self, obj):
+
+        if is_namedtuple(obj):
+            return obj
+
         for val in obj.copy():
             if val.startswith("_"):
                 obj.pop(val)
@@ -125,29 +170,36 @@ class YuQueArticleAssistant(metaclass=Singleton):
 
         return JObject(*obj.values())
 
-    def run_until_complete(self, *mother, loop=None):
+    def run_until_complete(self, *mother, loop=None, clean=False):
         result = None
-        if not loop:
+        if not loop and not self.loop:
             loop = YuQueAssistantBase.load_loop()
+        else:
+            loop = self.loop or YuQueAssistantBase.load_loop()
         try:
-            result = loop.run_until_complete(asyncio.gather(*mother))
+            result = loop.run_until_complete(asyncio.gather(*mother, loop=loop))
         except asyncio.exceptions.CancelledError as error:
             logger.error(f"在某个Future执行前，其对应的协程任务已取消\n {error}")
+        if clean:
+            loop.run_until_complete(YuQueAssistantBase.put_over_all_task())
+            loop.stop()
+            self.loop = None
 
         return result[0]
 
-    async def get_bolg_index(self, session):
+    async def get_bolg_index(self):
         """获取全部文章索引"""
-        async with session.get(self.repos_url, params={}, headers=self.headers) as r:
-            result = await r.json(loads=ujson.loads)
+        async with ClientSession(connector=YuQueAssistantBase.tcp_limiter()) as session:
+            async with session.get(self.repos_url, params={}, headers=self.headers) as r:
+                result = await r.json(loads=ujson.loads)
 
-        await session.close()
         print(result)
         logger.warning(f"博客总数: {len(result['data'])}")
 
         return result["data"]
 
     async def blog_worker(self, kwargs):
+        logger.warning(f"{datetime.now()} :: 进程 {os.getpid()} :: 线程 {threading.currentThread().native_id} :: {kwargs['slug']} 任务开始")
         extend = self.wrap(kwargs)
         async with extend.session.get(
             self.bolg_url.format(extend.slug), headers=self.headers
@@ -155,7 +207,7 @@ class YuQueArticleAssistant(metaclass=Singleton):
             row = await r.json(loads=ujson.loads)
         if row.get("status") == 429:
             logger.warning(f"请求过多被限制, 将自动重试.\n请求参数: {kwargs}\n错误信息: {row.get('message')}")
-            await self.blog_worker(kwargs)
+            await asyncio.create_task(self.blog_worker(kwargs))
         else:
             row = row["data"]
             if r"/" in row["title"]:  # 清理不规范的命名
@@ -173,15 +225,15 @@ class YuQueArticleAssistant(metaclass=Singleton):
             if file_name not in extend.file_list:
                 logger.warning(f"{datetime.now()} :: {file_name} 已保存")
                 result = row["body"]
-                async with aiofiles.open(
-                    extend.file_path / f"{file_name}.md", mode="x"
-                ) as op:
-                    await op.write(Summary + result)
+                # async with aiofiles.open(
+                #     extend.file_path / f"{file_name}.md", mode="x"
+                # ) as op:
+                #     await op.write(Summary + result)
 
     async def get_blog_info(self, args):
         *slug_list, file_list, file_path = args
 
-        async with ClientSession(connector=YuQueAssistantBase.tcp_limiter()) as session:
+        async with ClientSession(connector=YuQueAssistantBase.tcp_limiter(limit=7)) as session:
             task_list = [
                 asyncio.create_task(
                     self.blog_worker(
@@ -195,6 +247,9 @@ class YuQueArticleAssistant(metaclass=Singleton):
                 )
                 for slug in slug_list
             ]
+            # as_completed 快些
+            # row = await asyncio.gather(*task_list)
+
             row = []
             try:
                 for f in asyncio.as_completed(task_list, timeout=20):
@@ -213,9 +268,8 @@ class YuQueWorker(YuQueAssistantBase):
     def get_blog_summary_info(self):
         """获取空间下博客摘要信息"""
         yq_ass = YuQueArticleAssistant(token=self.token)
-        session = yq_ass.run_until_complete(self.yq_session(), loop=self.loop)
         result = yq_ass.run_until_complete(
-            yq_ass.get_bolg_index(session), loop=self.loop
+            yq_ass.get_bolg_index(), clean=True
         )
         return [val["slug"] for val in result]
 
@@ -223,26 +277,44 @@ class YuQueWorker(YuQueAssistantBase):
         """任务分割"""
         return [tasks[i::chunks] for i in range(chunks)]
 
-    def pool_worker(self, split_tasks):
+    def run_in_process(self, task_list):
+        """在进程池中运行"""
+        p_loop = self.load_loop()
         yq_ass = YuQueArticleAssistant(token=self.token)
+        p_loop.run_until_complete(yq_ass.get_blog_info(task_list))
 
-        async def run_all(yq_ass):
-            # 建议总并发量不要超过33，否则语雀会返回too many request
-            async with Pool(processes=4, queuecount=2, childconcurrency=32) as pool:
-                # 为每个任务集中增加文件列表和文件位置
-                for val in split_tasks:
-                    val.extend([self.file_list, self.file_path])
-                return await pool.map(
-                    yq_ass.get_blog_info,
-                    split_tasks,
-                )
+    def pool_worker(self, split_tasks, worker):
 
-        return asyncio.run(run_all(yq_ass))
+        # 原生进程池
+        if worker == 1:
+            m_pool = MPool(processes=int(os.getenv("processes") or os.cpu_count()))
+            for val in split_tasks:
+                val.extend([self.file_list, self.file_path])
+                m_pool.apply_async(self.run_in_process, args=(val,))
+            m_pool.close()
+            m_pool.join()
+
+        # 第三方异步进程池
+        elif worker == 2:
+            yq_ass = YuQueArticleAssistant(token=self.token)
+            async def run_all(yq_ass):
+                # 建议总并发量不要超过5000/h(实际可以更高点)，否则语雀会返回too many request
+                async with APool(
+                        processes=4, queuecount=4, childconcurrency=32
+                ) as pool:
+                    # 为每个任务集中增加文件列表和文件位置
+                    for val in split_tasks:
+                        val.extend([self.file_list, self.file_path])
+                    return await pool.map(
+                        yq_ass.get_blog_info,
+                        split_tasks,
+                    )
+
+            asyncio.run(run_all(yq_ass))
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    yw = YuQueWorker(loop=loop, token=os.getenv("token"))
+    yw = YuQueWorker(token=os.getenv("token"))
 
     started_at = time.monotonic()
 
@@ -250,7 +322,7 @@ if __name__ == "__main__":
     split_tasks = yw.split_task(tasks)
     logger.warning(f"分割任务集 :: {split_tasks}")
 
-    yw.pool_worker(split_tasks)
+    yw.pool_worker(split_tasks, 1)
 
     end = time.monotonic() - started_at
     print(f"time: {end:.2f} seconds")
